@@ -26,7 +26,7 @@ const toastEl     = document.getElementById('toast');
 const countEl     = document.getElementById('image-count');
 
 // ============================================================
-// UPLOAD LOCK (prevents concurrent batches from same tab)
+// UPLOAD LOCK
 // ============================================================
 let isUploading = false;
 
@@ -166,7 +166,7 @@ function promptForToken() {
 }
 
 // ============================================================
-// PROCESS FILES — single or batch
+// PROCESS FILES — no naming prompts, auto-generated names
 // ============================================================
 async function processFiles(files) {
     if (isUploading) {
@@ -177,10 +177,53 @@ async function processFiles(files) {
     uploadBtn.disabled = true;
 
     try {
-        if (files.length === 1) {
-            await handleSingleUpload(files[0]);
+        const stamp = generateStamp();
+
+        const planned = buildFilenames(files, stamp);
+
+        // Pre-flight duplicate check
+        let existing = [];
+        try {
+            const res = await fetch('images.json?t=' + Date.now());
+            existing = await res.json();
+        } catch (e) {
+            existing = [];
+        }
+
+        const conflicts = planned.filter(name => existing.includes(name));
+        if (conflicts.length) {
+            console.warn('Skipping duplicates:', conflicts);
+            toast(`${conflicts.length} duplicate${conflicts.length === 1 ? '' : 's'} skipped.`);
+        }
+
+        // Upload sequentially
+        let success = 0;
+        let skipped = conflicts.length;
+        const total = files.length;
+
+        for (let i = 0; i < files.length; i++) {
+            const filename = planned[i];
+            if (conflicts.includes(filename)) continue;
+
+            try {
+                toast(`Uploading ${i + 1}/${total}: ${filename}…`);
+                await uploadToGitHub(files[i], filename);
+                success++;
+            } catch (err) {
+                console.error('Failed:', filename, err);
+                skipped++;
+                if (String(err.message).includes('401') || String(err.message).includes('403')) {
+                    clearToken();
+                    toast('Token rejected. Batch aborted.');
+                    return;
+                }
+            }
+        }
+
+        if (skipped === 0) {
+            toast(`Uploaded ${success} image${success === 1 ? '' : 's'}.`);
         } else {
-            await handleBatchUpload(files);
+            toast(`Uploaded ${success}, skipped ${skipped}.`);
         }
     } finally {
         isUploading = false;
@@ -189,124 +232,26 @@ async function processFiles(files) {
     }
 }
 
-// ---------- Single file ----------
-async function handleSingleUpload(file) {
-    const suggested = suggestFilename(file);
-    const name = prompt('Filename for this image:', suggested);
-    if (!name) return;
-
-    const clean = sanitize(name);
-    if (!isValidExtension(clean)) {
-        toast('Use .png, .jpg, .jpeg, or .webp');
-        return;
-    }
-
-    try {
-        toast('Uploading ' + clean + '…');
-        await uploadToGitHub(file, clean);
-        toast('Uploaded ' + clean);
-    } catch (err) {
-        console.error(err);
-        toast('Upload failed: ' + err.message);
-        if (String(err.message).includes('401') || String(err.message).includes('403')) {
-            clearToken();
-            toast('Token rejected. Please re-enter.');
-        }
-    }
-}
-
-// ---------- Batch upload ----------
-async function handleBatchUpload(files) {
-    const prefix = prompt(
-        `You selected ${files.length} images.\n\n` +
-        `Enter a base name. Files will be numbered automatically.\n` +
-        `Example: "tc" → tc-001, tc-002, tc-003…`,
-        'q'
-    );
-    if (!prefix) return;
-
-    const cleanPrefix = sanitize(prefix).replace(/\.(png|jpe?g|webp)$/i, '');
-    if (!cleanPrefix) {
-        toast('Base name cannot be empty.');
-        return;
-    }
-
-    // Digits: at least 3, more if the batch has >999 files
-    const digits = Math.max(3, String(files.length).length);
-
-    // Pre-flight duplicate check
-    let existing = [];
-    try {
-        const res = await fetch('images.json?t=' + Date.now());
-        existing = await res.json();
-    } catch (e) {
-        // If this fails, proceed — the server-side check will catch duplicates anyway
-        existing = [];
-    }
-
-    // Build the planned filenames
-    const planned = files.map((file, i) => {
-        const num = String(i + 1).padStart(digits, '0');
-        return `${cleanPrefix}-${num}${getExt(file)}`;
-    });
-
-    const conflicts = planned.filter(name => existing.includes(name));
-
-    if (conflicts.length) {
-        const preview = conflicts.slice(0, 5).join(', ');
-        const more = conflicts.length > 5 ? ` …and ${conflicts.length - 5} more` : '';
-        const proceed = confirm(
-            `${conflicts.length} filename${conflicts.length === 1 ? '' : 's'} already exist:\n\n` +
-            `${preview}${more}\n\n` +
-            `Upload the remaining ${files.length - conflicts.length} file${files.length - conflicts.length === 1 ? '' : 's'}?`
-        );
-        if (!proceed) {
-            toast('Batch cancelled.');
-            return;
-        }
-    }
-
-    // Upload sequentially
-    let success = 0;
-    let skipped = 0;
-
-    for (let i = 0; i < files.length; i++) {
-        const filename = planned[i];
-
-        // Skip conflicts silently (user already confirmed)
-        if (conflicts.includes(filename)) {
-            skipped++;
-            continue;
-        }
-
-        try {
-            toast(`Uploading ${i + 1}/${files.length}: ${filename}…`);
-            await uploadToGitHub(files[i], filename);
-            success++;
-        } catch (err) {
-            console.error('Failed:', filename, err);
-            skipped++;
-            if (String(err.message).includes('401') || String(err.message).includes('403')) {
-                clearToken();
-                toast('Token rejected. Batch aborted.');
-                return;
-            }
-        }
-    }
-
-    if (skipped === 0) {
-        toast(`Uploaded ${success} image${success === 1 ? '' : 's'}.`);
-    } else {
-        toast(`Uploaded ${success}, skipped ${skipped}.`);
-    }
-}
-
-// ---------- Helpers ----------
-function suggestFilename(file) {
+// ============================================================
+// NAMING — timestamp-based, no user input
+// ============================================================
+function generateStamp() {
     const now = new Date();
     const pad = n => String(n).padStart(2, '0');
-    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-    return `q-${stamp}${getExt(file)}`;
+    return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+}
+
+function buildFilenames(files, stamp) {
+    if (files.length === 1) {
+        // Single: q-20251011-143022.png
+        return [`q-${stamp}${getExt(files[0])}`];
+    }
+    // Batch: q-20251011-143022-001.png, q-20251011-143022-002.png, ...
+    const digits = Math.max(3, String(files.length).length);
+    return files.map((file, i) => {
+        const num = String(i + 1).padStart(digits, '0');
+        return `q-${stamp}-${num}${getExt(file)}`;
+    });
 }
 
 function getExt(file) {
@@ -314,14 +259,6 @@ function getExt(file) {
     if (!m) return '.png';
     const e = m[1].toLowerCase();
     return e === 'jpeg' ? '.jpg' : `.${e}`;
-}
-
-function isValidExtension(name) {
-    return /\.(png|jpe?g|webp)$/i.test(name);
-}
-
-function sanitize(name) {
-    return name.trim().replace(/\s+/g, '-').replace(/[^a-zA-Z0-9._-]/g, '');
 }
 
 // ============================================================
