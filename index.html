@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GRE Verbal Gallery</title>
+    <title>GRE Verbal Practice Gallery</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,6 +13,24 @@
             <!-- Images will be injected here by JavaScript -->
         </div>
     </div>
+
+    <!-- Hidden file input -->
+    <input type="file" id="file-input" accept="image/*" multiple style="display: none;">
+
+    <!-- Floating Action Button (Upload) -->
+    <button id="upload-btn" class="fab" title="Upload image">＋</button>
+
+    <!-- Settings Gear (Token Management) -->
+    <button id="settings-btn" class="gear" title="Settings">⚙</button>
+
+    <!-- Modal for full-size viewing -->
+    <div id="gallery-modal" class="modal">
+        <img id="modal-img" src="" alt="Full size">
+    </div>
+
+    <!-- Toast notification -->
+    <div id="toast"></div>
+
     <script src="script.js"></script>
 </body>
 </html>
