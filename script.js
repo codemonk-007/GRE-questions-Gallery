@@ -1,12 +1,12 @@
 // ============================================================
-// CONFIG — edit these to match your repo
+// CONFIG
 // ============================================================
-const GITHUB_OWNER = 'codemonk-007';
-const GITHUB_REPO  = 'GRE-questions-Gallery';
+const GITHUB_OWNER  = 'codemonk-007';
+const GITHUB_REPO   = 'GRE-questions-Gallery';
 const GITHUB_BRANCH = 'main';
 
 // ============================================================
-// Token storage (never hardcode the token)
+// TOKEN STORAGE
 // ============================================================
 const TOKEN_KEY = 'gre_gallery_token';
 function getToken() { return localStorage.getItem(TOKEN_KEY); }
@@ -14,18 +14,19 @@ function setToken(t) { localStorage.setItem(TOKEN_KEY, t); }
 function clearToken() { localStorage.removeItem(TOKEN_KEY); }
 
 // ============================================================
-// DOM Elements
+// DOM REFERENCES
 // ============================================================
-const gallery = document.getElementById('gallery');
-const fileInput = document.getElementById('file-input');
-const uploadBtn = document.getElementById('upload-btn');
+const gallery     = document.getElementById('gallery');
+const fileInput   = document.getElementById('file-input');
+const uploadBtn   = document.getElementById('upload-btn');
 const settingsBtn = document.getElementById('settings-btn');
-const modal = document.getElementById('gallery-modal');
-const modalImg = document.getElementById('modal-img');
-const toastEl = document.getElementById('toast');
+const modal       = document.getElementById('gallery-modal');
+const modalImg    = document.getElementById('modal-img');
+const toastEl     = document.getElementById('toast');
+const countEl     = document.getElementById('image-count');
 
 // ============================================================
-// Init
+// INIT
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
     loadGallery();
@@ -34,7 +35,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ============================================================
-// Gallery Load
+// GALLERY LOAD
 // ============================================================
 function loadGallery() {
     fetch('images.json?t=' + Date.now())
@@ -42,56 +43,70 @@ function loadGallery() {
         .then(images => {
             gallery.innerHTML = '';
             if (!images.length) {
-                gallery.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:#64748b;">No images yet. Tap the + button to upload your first question.</p>';
+                gallery.innerHTML = '<div class="empty-state">No images yet. Tap the + button to upload your first question.</div>';
+                if (countEl) countEl.textContent = '0 questions';
                 return;
             }
             images.forEach(name => {
                 const card = document.createElement('div');
                 card.className = 'card';
+
                 const img = document.createElement('img');
                 img.src = `images/${name}`;
                 img.alt = name;
                 img.loading = 'lazy';
                 img.addEventListener('click', () => openModal(img.src));
+
+                const dl = document.createElement('a');
+                dl.className = 'card-download';
+                dl.href = `images/${name}`;
+                dl.download = name;
+                dl.title = 'Download';
+                dl.innerHTML = '⬇';
+                dl.addEventListener('click', e => e.stopPropagation());
+
                 card.appendChild(img);
+                card.appendChild(dl);
                 gallery.appendChild(card);
             });
+
+            if (countEl) {
+                countEl.textContent = `${images.length} question${images.length === 1 ? '' : 's'}`;
+            }
         })
         .catch(() => {
-            gallery.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:#dc2626;">Error loading images.json</p>';
+            gallery.innerHTML = '<div class="empty-state error">Error loading images.json</div>';
+            if (countEl) countEl.textContent = 'Error';
         });
 }
 
 // ============================================================
-// Modal
+// MODAL
 // ============================================================
 function openModal(src) {
     modalImg.src = src;
     modal.classList.add('active');
 }
-
-modal.addEventListener('click', () => {
-    modal.classList.remove('active');
-});
+modal.addEventListener('click', () => modal.classList.remove('active'));
 
 // ============================================================
-// Event Listeners
+// EVENT LISTENERS
 // ============================================================
 function setupEventListeners() {
-    // Upload Button
+    // Upload button
     uploadBtn.addEventListener('click', () => {
         if (!getToken()) { promptForToken(); return; }
         fileInput.click();
     });
 
-    // File Input
+    // File input
     fileInput.addEventListener('change', e => {
         const files = Array.from(e.target.files);
         if (files.length) processFiles(files);
         e.target.value = '';
     });
 
-    // Settings Button
+    // Settings / token
     settingsBtn.addEventListener('click', () => {
         if (getToken()) {
             if (confirm('Clear your saved GitHub token?')) {
@@ -102,10 +117,19 @@ function setupEventListeners() {
             promptForToken();
         }
     });
+
+    // Download all as ZIP
+    const dlAllBtn = document.getElementById('download-all-btn');
+    if (dlAllBtn) dlAllBtn.addEventListener('click', downloadAllAsZip);
+
+    // Escape key closes modal
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') modal.classList.remove('active');
+    });
 }
 
 // ============================================================
-// Paste Handler (Ctrl+V anywhere)
+// PASTE HANDLER (Ctrl+V anywhere)
 // ============================================================
 function setupPasteHandler() {
     document.addEventListener('paste', e => {
@@ -126,7 +150,7 @@ function setupPasteHandler() {
 }
 
 // ============================================================
-// Token Prompt
+// TOKEN PROMPT
 // ============================================================
 function promptForToken() {
     const t = prompt(
@@ -142,20 +166,21 @@ function promptForToken() {
 }
 
 // ============================================================
-// Process Files
+// PROCESS FILES
 // ============================================================
 async function processFiles(files) {
     for (const file of files) {
         const suggested = suggestFilename(file);
         const name = prompt('Filename for this image:', suggested);
         if (!name) continue;
-        
+
         const clean = sanitize(name);
         if (!clean.endsWith('.png') && !clean.endsWith('.jpg') &&
             !clean.endsWith('.jpeg') && !clean.endsWith('.webp')) {
-            toast('Use .png, .jpg, .jpeg, or .webp'); continue;
+            toast('Use .png, .jpg, .jpeg, or .webp');
+            continue;
         }
-        
+
         try {
             toast('Uploading ' + clean + '…');
             await uploadToGitHub(file, clean);
@@ -167,7 +192,7 @@ async function processFiles(files) {
                 clearToken();
                 toast('Token rejected. Please re-enter.');
             }
-            return; // Stop processing the rest if one fails
+            return;
         }
     }
     loadGallery();
@@ -176,7 +201,7 @@ async function processFiles(files) {
 function suggestFilename(file) {
     const now = new Date();
     const pad = n => String(n).padStart(2, '0');
-    const stamp = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
     let ext = (file.name.match(/\.(png|jpe?g|webp)$/i) || [, '.png'])[1].toLowerCase();
     if (ext === 'jpeg') ext = '.jpg';
     return `q-${stamp}${ext}`;
@@ -187,7 +212,7 @@ function sanitize(name) {
 }
 
 // ============================================================
-// GitHub Atomic Upload via Trees API
+// GITHUB ATOMIC UPLOAD
 // ============================================================
 async function uploadToGitHub(file, filename) {
     const token = getToken();
@@ -215,7 +240,6 @@ async function uploadToGitHub(file, filename) {
     let currentImages = [];
     try { currentImages = JSON.parse(decoded); } catch (e) { currentImages = []; }
 
-    // Avoid duplicates
     if (currentImages.includes(filename)) {
         throw new Error('A file with that name already exists.');
     }
@@ -224,7 +248,8 @@ async function uploadToGitHub(file, filename) {
     // 3. Upload image blob
     const imgBase64 = await fileToBase64(file);
     const imgBlobRes = await fetch(`${api}/git/blobs`, {
-        method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: imgBase64, encoding: 'base64' })
     });
     if (!imgBlobRes.ok) throw new Error(`blob ${imgBlobRes.status}`);
@@ -232,7 +257,8 @@ async function uploadToGitHub(file, filename) {
 
     // 4. Upload new images.json blob
     const jsonBlobRes = await fetch(`${api}/git/blobs`, {
-        method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({
             content: JSON.stringify(newImages, null, 2),
             encoding: 'utf-8'
@@ -242,7 +268,8 @@ async function uploadToGitHub(file, filename) {
 
     // 5. Create new tree
     const treeRes = await fetch(`${api}/git/trees`, {
-        method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({
             base_tree: baseTreeSha,
             tree: [
@@ -255,7 +282,8 @@ async function uploadToGitHub(file, filename) {
 
     // 6. Create commit
     const newCommitRes = await fetch(`${api}/git/commits`, {
-        method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({
             message: `Add ${filename}`,
             tree: treeData.sha,
@@ -266,7 +294,8 @@ async function uploadToGitHub(file, filename) {
 
     // 7. Update branch ref
     const updateRes = await fetch(`${api}/git/refs/heads/${GITHUB_BRANCH}`, {
-        method: 'PATCH', headers: { ...headers, 'Content-Type': 'application/json' },
+        method: 'PATCH',
+        headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ sha: newCommit.sha, force: false })
     });
     if (!updateRes.ok) throw new Error(`ref update ${updateRes.status}`);
@@ -275,19 +304,75 @@ async function uploadToGitHub(file, filename) {
 function fileToBase64(file) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
-        reader.onload = () => {
-            const result = reader.result;
-            resolve(result.split(',')[1]); // strip data URL prefix
-        };
+        reader.onload = () => resolve(reader.result.split(',')[1]);
         reader.onerror = reject;
         reader.readAsDataURL(file);
     });
 }
 
 // ============================================================
-// Toast Helper
+// DOWNLOAD ALL AS ZIP
+// ============================================================
+async function downloadAllAsZip() {
+    const btn = document.getElementById('download-all-btn');
+    if (typeof JSZip === 'undefined') {
+        toast('JSZip failed to load. Check your internet.');
+        return;
+    }
+
+    try {
+        const res = await fetch('images.json?t=' + Date.now());
+        const images = await res.json();
+        if (!images.length) { toast('No images to download.'); return; }
+
+        const originalHTML = btn.innerHTML;
+        btn.disabled = true;
+
+        const zip = new JSZip();
+        const folder = zip.folder('gre-verbal-questions');
+
+        let i = 0;
+        for (const name of images) {
+            i++;
+            btn.innerHTML = `<span>Downloading ${i}/${images.length}…</span>`;
+            try {
+                const r = await fetch(`images/${name}`);
+                const blob = await r.blob();
+                folder.file(name, blob);
+            } catch (e) {
+                console.warn('Skipped', name, e);
+            }
+        }
+
+        btn.innerHTML = '<span>Zipping…</span>';
+        const zipBlob = await zip.generateAsync({ type: 'blob' });
+
+        const url = URL.createObjectURL(zipBlob);
+        const a = document.createElement('a');
+        const stamp = new Date().toISOString().slice(0, 10);
+        a.href = url;
+        a.download = `gre-verbal-${stamp}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        toast('ZIP downloaded.');
+        btn.innerHTML = originalHTML;
+        btn.disabled = false;
+    } catch (err) {
+        console.error(err);
+        toast('Download failed: ' + err.message);
+        btn.disabled = false;
+    }
+}
+
+// ============================================================
+// TOAST
 // ============================================================
 function toast(msg) {
+    console.log('[toast]', msg);
+    if (!toastEl) return;
     toastEl.textContent = msg;
     toastEl.classList.add('show');
     clearTimeout(toastEl._timer);
