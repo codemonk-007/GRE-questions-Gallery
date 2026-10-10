@@ -26,6 +26,11 @@ const toastEl     = document.getElementById('toast');
 const countEl     = document.getElementById('image-count');
 
 // ============================================================
+// UPLOAD LOCK (prevents concurrent batches from same tab)
+// ============================================================
+let isUploading = false;
+
+// ============================================================
 // INIT
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
@@ -93,20 +98,17 @@ modal.addEventListener('click', () => modal.classList.remove('active'));
 // EVENT LISTENERS
 // ============================================================
 function setupEventListeners() {
-    // Upload button
     uploadBtn.addEventListener('click', () => {
         if (!getToken()) { promptForToken(); return; }
         fileInput.click();
     });
 
-    // File input
     fileInput.addEventListener('change', e => {
         const files = Array.from(e.target.files);
         if (files.length) processFiles(files);
         e.target.value = '';
     });
 
-    // Settings / token
     settingsBtn.addEventListener('click', () => {
         if (getToken()) {
             if (confirm('Clear your saved GitHub token?')) {
@@ -118,11 +120,9 @@ function setupEventListeners() {
         }
     });
 
-    // Download all as ZIP
     const dlAllBtn = document.getElementById('download-all-btn');
     if (dlAllBtn) dlAllBtn.addEventListener('click', downloadAllAsZip);
 
-    // Escape key closes modal
     document.addEventListener('keydown', e => {
         if (e.key === 'Escape') modal.classList.remove('active');
     });
@@ -166,45 +166,158 @@ function promptForToken() {
 }
 
 // ============================================================
-// PROCESS FILES
+// PROCESS FILES — single or batch
 // ============================================================
 async function processFiles(files) {
-    for (const file of files) {
-        const suggested = suggestFilename(file);
-        const name = prompt('Filename for this image:', suggested);
-        if (!name) continue;
+    if (isUploading) {
+        toast('Another upload is in progress. Please wait.');
+        return;
+    }
+    isUploading = true;
+    uploadBtn.disabled = true;
 
-        const clean = sanitize(name);
-        if (!clean.endsWith('.png') && !clean.endsWith('.jpg') &&
-            !clean.endsWith('.jpeg') && !clean.endsWith('.webp')) {
-            toast('Use .png, .jpg, .jpeg, or .webp');
+    try {
+        if (files.length === 1) {
+            await handleSingleUpload(files[0]);
+        } else {
+            await handleBatchUpload(files);
+        }
+    } finally {
+        isUploading = false;
+        uploadBtn.disabled = false;
+        loadGallery();
+    }
+}
+
+// ---------- Single file ----------
+async function handleSingleUpload(file) {
+    const suggested = suggestFilename(file);
+    const name = prompt('Filename for this image:', suggested);
+    if (!name) return;
+
+    const clean = sanitize(name);
+    if (!isValidExtension(clean)) {
+        toast('Use .png, .jpg, .jpeg, or .webp');
+        return;
+    }
+
+    try {
+        toast('Uploading ' + clean + '…');
+        await uploadToGitHub(file, clean);
+        toast('Uploaded ' + clean);
+    } catch (err) {
+        console.error(err);
+        toast('Upload failed: ' + err.message);
+        if (String(err.message).includes('401') || String(err.message).includes('403')) {
+            clearToken();
+            toast('Token rejected. Please re-enter.');
+        }
+    }
+}
+
+// ---------- Batch upload ----------
+async function handleBatchUpload(files) {
+    const prefix = prompt(
+        `You selected ${files.length} images.\n\n` +
+        `Enter a base name. Files will be numbered automatically.\n` +
+        `Example: "tc" → tc-001, tc-002, tc-003…`,
+        'q'
+    );
+    if (!prefix) return;
+
+    const cleanPrefix = sanitize(prefix).replace(/\.(png|jpe?g|webp)$/i, '');
+    if (!cleanPrefix) {
+        toast('Base name cannot be empty.');
+        return;
+    }
+
+    // Digits: at least 3, more if the batch has >999 files
+    const digits = Math.max(3, String(files.length).length);
+
+    // Pre-flight duplicate check
+    let existing = [];
+    try {
+        const res = await fetch('images.json?t=' + Date.now());
+        existing = await res.json();
+    } catch (e) {
+        // If this fails, proceed — the server-side check will catch duplicates anyway
+        existing = [];
+    }
+
+    // Build the planned filenames
+    const planned = files.map((file, i) => {
+        const num = String(i + 1).padStart(digits, '0');
+        return `${cleanPrefix}-${num}${getExt(file)}`;
+    });
+
+    const conflicts = planned.filter(name => existing.includes(name));
+
+    if (conflicts.length) {
+        const preview = conflicts.slice(0, 5).join(', ');
+        const more = conflicts.length > 5 ? ` …and ${conflicts.length - 5} more` : '';
+        const proceed = confirm(
+            `${conflicts.length} filename${conflicts.length === 1 ? '' : 's'} already exist:\n\n` +
+            `${preview}${more}\n\n` +
+            `Upload the remaining ${files.length - conflicts.length} file${files.length - conflicts.length === 1 ? '' : 's'}?`
+        );
+        if (!proceed) {
+            toast('Batch cancelled.');
+            return;
+        }
+    }
+
+    // Upload sequentially
+    let success = 0;
+    let skipped = 0;
+
+    for (let i = 0; i < files.length; i++) {
+        const filename = planned[i];
+
+        // Skip conflicts silently (user already confirmed)
+        if (conflicts.includes(filename)) {
+            skipped++;
             continue;
         }
 
         try {
-            toast('Uploading ' + clean + '…');
-            await uploadToGitHub(file, clean);
-            toast('Uploaded ' + clean);
+            toast(`Uploading ${i + 1}/${files.length}: ${filename}…`);
+            await uploadToGitHub(files[i], filename);
+            success++;
         } catch (err) {
-            console.error(err);
-            toast('Upload failed: ' + err.message);
+            console.error('Failed:', filename, err);
+            skipped++;
             if (String(err.message).includes('401') || String(err.message).includes('403')) {
                 clearToken();
-                toast('Token rejected. Please re-enter.');
+                toast('Token rejected. Batch aborted.');
+                return;
             }
-            return;
         }
     }
-    loadGallery();
+
+    if (skipped === 0) {
+        toast(`Uploaded ${success} image${success === 1 ? '' : 's'}.`);
+    } else {
+        toast(`Uploaded ${success}, skipped ${skipped}.`);
+    }
 }
 
+// ---------- Helpers ----------
 function suggestFilename(file) {
     const now = new Date();
     const pad = n => String(n).padStart(2, '0');
     const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-    let ext = (file.name.match(/\.(png|jpe?g|webp)$/i) || [, '.png'])[1].toLowerCase();
-    if (ext === 'jpeg') ext = '.jpg';
-    return `q-${stamp}${ext}`;
+    return `q-${stamp}${getExt(file)}`;
+}
+
+function getExt(file) {
+    const m = file.name.match(/\.(png|jpe?g|webp)$/i);
+    if (!m) return '.png';
+    const e = m[1].toLowerCase();
+    return e === 'jpeg' ? '.jpg' : `.${e}`;
+}
+
+function isValidExtension(name) {
+    return /\.(png|jpe?g|webp)$/i.test(name);
 }
 
 function sanitize(name) {
